@@ -48,7 +48,7 @@ eye_mouth = (MY - EY) / k                   # metres between eyes and mouth (~0.
 fz = nz + 0.2 * eye_mouth
 oval = ((x - nx) / (1.45 * eye_mouth)) ** 2 + ((z - fz) / (2.1 * eye_mouth)) ** 2
 facing = np.clip((-nr[:, 1] - 0.3) / 0.3, 0, 1)
-mask = np.clip((1.0 - oval) / 0.4, 0, 1) * facing
+mask = np.clip((1.0 - oval) / 0.6, 0, 1) ** 1.5 * facing
 # keep the photo off the hair locks that fall across the face
 hairish = ~skin
 mask = mask * np.where(hairish, 0.0, 1.0)
@@ -58,9 +58,15 @@ pp = np.empty(W * H * 4, "f"); ph.pixels.foreach_get(pp); pp = pp.reshape(H, W, 
 U = np.clip((pnx + (x - nx) * k).astype(int), 0, W - 1)
 V = np.clip(((H - pny) + (z - nz) * k).astype(int), 0, H - 1)
 photo = pp[V, U, :3]
+# colour transfer: the photo face takes the painted body's skin statistics (mean and spread per channel), measured
+# on the neck and upper chest, so face and body read as one skin. Done in linear values, like the shader.
 sel = (mask > 0.5) & skin
-gain = np.clip(np.median(painted[sel], 0) / (np.median(photo[sel], 0) + 1e-4), 0.7, 1.4)
-print("photo->paint gain", np.round(gain, 2))
+body_skin = skin & (z < nz - 0.06) & (z > nz - 0.32) & (np.abs(x - nx) < 0.12) & (nr[:, 1] < -0.2)
+lin = lambda c: np.power(np.clip(c, 0, 1), 2.2)
+ps, bs = lin(photo[sel]), lin(painted[body_skin])
+scale = np.clip(bs.std(0) / (ps.std(0) + 1e-4), 0.8, 1.25)  # keep the eyes and lips contrasty
+off = bs.mean(0) - ps.mean(0) * scale
+print("skin match: %d face / %d body vertices, scale %s offset %s" % (sel.sum(), body_skin.sum(), np.round(scale, 2), np.round(off, 3)))
 
 a_ = me.color_attributes.new("face_w", "FLOAT_COLOR", "POINT")
 c4 = np.ones((n, 4), "f"); c4[:, :3] = mask[:, None]; a_.data.foreach_set("color", c4.ravel())
@@ -81,13 +87,14 @@ u_ = lin(sep.outputs["X"], k / W, (pnx - nx * k) / W)
 v_ = lin(sep.outputs["Z"], k / H, ((H - pny) - nz * k) / H)
 cmb = N("ShaderNodeCombineXYZ"); L(u_, cmb.inputs[0]); L(v_, cmb.inputs[1])
 pt = N("ShaderNodeTexImage", image=ph, extension="CLIP", interpolation="Cubic"); L(cmb.outputs[0], pt.inputs["Vector"])
-gn = N("ShaderNodeMix", data_type="RGBA", blend_type="MULTIPLY"); gn.inputs["Factor"].default_value = 1
-L(pt.outputs["Color"], gn.inputs[6]); gn.inputs[7].default_value = tuple(float(g) for g in gain) + (1,)
+gn = N("ShaderNodeVectorMath", operation="MULTIPLY_ADD")
+L(pt.outputs["Color"], gn.inputs[0]); gn.inputs[1].default_value = tuple(float(v) for v in scale)
+gn.inputs[2].default_value = tuple(float(v) for v in off)
 uvn = N("ShaderNodeUVMap", uv_map=me.uv_layers.active.name)
 tt = N("ShaderNodeTexImage", image=tex); L(uvn.outputs["UV"], tt.inputs["Vector"])
 fw = N("ShaderNodeVertexColor", layer_name="face_w")
 mx = N("ShaderNodeMix", data_type="RGBA"); L(fw.outputs["Color"], mx.inputs["Factor"])
-L(tt.outputs["Color"], mx.inputs[6]); L(gn.outputs[2], mx.inputs[7])
+L(tt.outputs["Color"], mx.inputs[6]); L(gn.outputs[0], mx.inputs[7])
 em = N("ShaderNodeEmission"); L(mx.outputs[2], em.inputs[0])
 out = N("ShaderNodeOutputMaterial"); L(em.outputs[0], out.inputs[0])
 new = bpy.data.images.new("painted_face", TW, TH)
