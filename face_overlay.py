@@ -64,8 +64,9 @@ photo = pp[V, U, :3]
 # above the brows the photo shows her hair falling over the forehead: keep the photo only where it is skin there,
 # so those locks stay painted hair instead of a brightened photo of hair
 ph_skin = (photo[:, 0] > photo[:, 2] + 0.04) & (photo.mean(1) > 0.16)
-forehead = z > nz + 1.0 * eye_mouth
-keep = np.where(forehead, ph_skin, True).astype(float)
+fh = np.clip((z - (nz + 0.8 * eye_mouth)) / (0.6 * eye_mouth), 0, 1)  # 0 below the brows, 1 well above
+forehead = fh > 0.5
+keep = 1 - fh * (~ph_skin)
 for _ in range(3):  # soften the cut
     acc = np.zeros(n); cnt = np.zeros(n)
     np.add.at(acc, ed[:, 0], keep[ed[:, 1]]); np.add.at(acc, ed[:, 1], keep[ed[:, 0]])
@@ -95,8 +96,15 @@ scale = np.clip(bs.std(0) / (ps.std(0) + 1e-4), 0.8, 1.25)  # keep the eyes and 
 off = bs.mean(0) - ps.mean(0) * scale
 print("skin match: %d face / %d body vertices, scale %s offset %s" % (sel.sum(), body_skin.sum(), np.round(scale, 2), np.round(off, 3)))
 
+constraint = (mask > 0) * 1.0
+constraint = np.where(np.clip((1.0 - oval) / 0.6, 0, 1) * facing > 0.02, keep * (1 - hairw) * np.where(hairish, 0.0, 1.0), 0.0)
+for _ in range(2):
+    acc = np.zeros(n); cnt = np.zeros(n)
+    np.add.at(acc, ed[:, 0], constraint[ed[:, 1]]); np.add.at(acc, ed[:, 1], constraint[ed[:, 0]])
+    np.add.at(cnt, ed[:, 0], 1); np.add.at(cnt, ed[:, 1], 1)
+    constraint = 0.5 * constraint + 0.5 * acc / np.maximum(cnt, 1)
 a_ = me.color_attributes.new("face_w", "FLOAT_COLOR", "POINT")
-c4 = np.ones((n, 4), "f"); c4[:, :3] = mask[:, None]; a_.data.foreach_set("color", c4.ravel())
+c4 = np.ones((n, 4), "f"); c4[:, :3] = constraint[:, None]; a_.data.foreach_set("color", c4.ravel())
 b_ = me.color_attributes.new("hair_w", "FLOAT_COLOR", "POINT")
 c4 = np.ones((n, 4), "f"); c4[:, :3] = hairw[:, None]; b_.data.foreach_set("color", c4.ravel())
 
@@ -122,8 +130,41 @@ gn.inputs[2].default_value = tuple(float(v) for v in off)
 uvn = N("ShaderNodeUVMap", uv_map=me.uv_layers.active.name)
 tt = N("ShaderNodeTexImage", image=tex); L(uvn.outputs["UV"], tt.inputs["Vector"])
 fw = N("ShaderNodeVertexColor", layer_name="face_w")
-mx = N("ShaderNodeMix", data_type="RGBA"); L(fw.outputs["Color"], mx.inputs["Factor"])
+# per-pixel oval: ((x - nx) / ax)^2 + ((z - fz) / az)^2, then (1 - oval) / 0.6 clamped, ^1.5, times facing
+ox = lin(sep.outputs["X"], 1 / (1.45 * eye_mouth), -nx / (1.45 * eye_mouth))
+oz = lin(sep.outputs["Z"], 1 / (2.1 * eye_mouth), -fz / (2.1 * eye_mouth))
+def m2(a_, b_, op):
+    nd = N("ShaderNodeMath", operation=op); L(a_, nd.inputs[0])
+    if isinstance(b_, float): nd.inputs[1].default_value = b_
+    else: L(b_, nd.inputs[1])
+    return nd.outputs[0]
+oval_s = m2(m2(ox, ox, "MULTIPLY"), m2(oz, oz, "MULTIPLY"), "ADD")
+edge = N("ShaderNodeMapRange"); L(oval_s, edge.inputs["Value"])
+edge.inputs["From Min"].default_value = 1.0; edge.inputs["From Max"].default_value = 0.4  # clamped 0..1
+edge_p = m2(edge.outputs["Result"], 1.5, "POWER")
+nrm = N("ShaderNodeSeparateXYZ"); L(geo.outputs["Normal"], nrm.inputs[0])
+fac = N("ShaderNodeMapRange"); L(nrm.outputs["Y"], fac.inputs["Value"])
+fac.inputs["From Min"].default_value = -0.3; fac.inputs["From Max"].default_value = -0.6
+fsep = N("ShaderNodeSeparateColor"); L(fw.outputs["Color"], fsep.inputs[0])
+wmask = m2(m2(edge_p, fac.outputs["Result"], "MULTIPLY"), fsep.outputs[0], "MULTIPLY")
+mx = N("ShaderNodeMix", data_type="RGBA"); L(wmask, mx.inputs["Factor"])
 L(tt.outputs["Color"], mx.inputs[6]); L(gn.outputs[0], mx.inputs[7])
+# soften the photo's cheek and jaw shadows and its slightly redder cast, over a wider oval on the skin, so the face
+# sits in the same light and tone as the body
+wide = N("ShaderNodeMapRange"); L(oval_s, wide.inputs["Value"])
+wide.inputs["From Min"].default_value = 1.8; wide.inputs["From Max"].default_value = 0.6
+lift_w = m2(m2(wide.outputs["Result"], fac.outputs["Result"], "MULTIPLY"), fsep.outputs[0], "MULTIPLY")
+# protect the features: brows, lashes, pupils, nostrils and the lip line are the darkest values (linear luma below
+# ~0.05) and must keep their contrast; only the mid-dark skin shadows get lifted
+bw = N("ShaderNodeRGBToBW"); L(mx.outputs[2], bw.inputs[0])
+prot = N("ShaderNodeMapRange"); L(bw.outputs[0], prot.inputs["Value"])
+prot.inputs["From Min"].default_value = 0.035; prot.inputs["From Max"].default_value = 0.08
+lift_w = m2(lift_w, prot.outputs["Result"], "MULTIPLY")
+gam = N("ShaderNodeGamma"); L(mx.outputs[2], gam.inputs["Color"]); gam.inputs["Gamma"].default_value = 0.82
+hs = N("ShaderNodeHueSaturation"); L(gam.outputs[0], hs.inputs["Color"])
+hs.inputs["Saturation"].default_value = 0.95; hs.inputs["Hue"].default_value = 0.503
+lifted = N("ShaderNodeMix", data_type="RGBA"); L(lift_w, lifted.inputs["Factor"])
+L(mx.outputs[2], lifted.inputs[6]); L(hs.outputs["Color"], lifted.inputs[7])
 hw_ = N("ShaderNodeVertexColor", layer_name="hair_w")
 # painted texture darkened to the hair colour (keeps its shading and strands)
 tint = N("ShaderNodeMix", data_type="RGBA", blend_type="MULTIPLY"); tint.inputs["Factor"].default_value = 1
@@ -131,14 +172,14 @@ L(tt.outputs["Color"], tint.inputs[6])
 ratio = np.clip(np.power(hair_col, 2.2) / (np.power(np.median(painted[skin & upper_front], 0), 2.2) + 1e-4), 0, 1) if (skin & upper_front).any() else np.ones(3)
 tint.inputs[7].default_value = tuple(float(v) for v in ratio) + (1,)
 mx2 = N("ShaderNodeMix", data_type="RGBA"); L(hw_.outputs["Color"], mx2.inputs["Factor"])
-L(mx.outputs[2], mx2.inputs[6]); L(tint.outputs[2], mx2.inputs[7])
+L(lifted.outputs[2], mx2.inputs[6]); L(tint.outputs[2], mx2.inputs[7])
 em = N("ShaderNodeEmission"); L(mx2.outputs[2], em.inputs[0])
 out = N("ShaderNodeOutputMaterial"); L(em.outputs[0], out.inputs[0])
-new = bpy.data.images.new("painted_face", TW, TH)
+new = bpy.data.images.new("painted_face", max(TW, 4096), max(TH, 4096))
 tn = N("ShaderNodeTexImage", image=new); nt.nodes.active = tn
 old = list(me.materials); me.materials.clear(); me.materials.append(mat)
 sc = bpy.context.scene
-sc.render.engine = "CYCLES"; sc.cycles.samples = 4; sc.cycles.device = "CPU"; sc.render.bake.margin = 8
+sc.render.engine = "CYCLES"; sc.cycles.samples = 8; sc.cycles.device = "CPU"; sc.render.bake.margin = 8
 bpy.context.view_layer.objects.active = obj; obj.select_set(True)
 bpy.ops.object.bake(type="EMIT")
 new.pack()
@@ -150,6 +191,8 @@ for m in old:
             nd.image = new
 for nm_ in ("face_w", "hair_w"):
     me.color_attributes.remove(me.color_attributes[nm_])
+for poly in me.polygons:
+    poly.use_smooth = True  # the faceted look on the face came from flat shading
 bpy.ops.wm.save_as_mainfile(filepath=OUT.replace(".glb", ".blend"))
 bpy.ops.export_scene.gltf(filepath=OUT, export_format="GLB", export_image_format="JPEG", export_vertex_color="NONE")
 print("DONE")
