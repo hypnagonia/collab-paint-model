@@ -165,6 +165,14 @@ hs = N("ShaderNodeHueSaturation"); L(gam.outputs[0], hs.inputs["Color"])
 hs.inputs["Saturation"].default_value = 0.95; hs.inputs["Hue"].default_value = 0.503
 lifted = N("ShaderNodeMix", data_type="RGBA"); L(lift_w, lifted.inputs["Factor"])
 L(mx.outputs[2], lifted.inputs[6]); L(hs.outputs["Color"], lifted.inputs[7])
+import os as _os
+# brightness of the face region relative to the body (measured: lifted face 0.54 vs chest 0.42 value)
+FG = [float(v) for v in _os.environ.get("FACE_GAIN", "0.60,0.53,0.51").split(",")]
+fgain = N("ShaderNodeMix", data_type="RGBA", blend_type="MULTIPLY"); fgain.inputs["Factor"].default_value = 1
+L(lifted.outputs[2], fgain.inputs[6]); fgain.inputs[7].default_value = tuple(FG) + (1,)
+face_reg = m2(m2(wide.outputs["Result"], fac.outputs["Result"], "MULTIPLY"), fsep.outputs[0], "MULTIPLY")
+graded = N("ShaderNodeMix", data_type="RGBA"); L(face_reg, graded.inputs["Factor"])
+L(lifted.outputs[2], graded.inputs[6]); L(fgain.outputs[2], graded.inputs[7])
 hw_ = N("ShaderNodeVertexColor", layer_name="hair_w")
 # painted texture darkened to the hair colour (keeps its shading and strands)
 tint = N("ShaderNodeMix", data_type="RGBA", blend_type="MULTIPLY"); tint.inputs["Factor"].default_value = 1
@@ -172,16 +180,36 @@ L(tt.outputs["Color"], tint.inputs[6])
 ratio = np.clip(np.power(hair_col, 2.2) / (np.power(np.median(painted[skin & upper_front], 0), 2.2) + 1e-4), 0, 1) if (skin & upper_front).any() else np.ones(3)
 tint.inputs[7].default_value = tuple(float(v) for v in ratio) + (1,)
 mx2 = N("ShaderNodeMix", data_type="RGBA"); L(hw_.outputs["Color"], mx2.inputs["Factor"])
-L(lifted.outputs[2], mx2.inputs[6]); L(tint.outputs[2], mx2.inputs[7])
+L(graded.outputs[2], mx2.inputs[6]); L(tint.outputs[2], mx2.inputs[7])
 em = N("ShaderNodeEmission"); L(mx2.outputs[2], em.inputs[0])
 out = N("ShaderNodeOutputMaterial"); L(em.outputs[0], out.inputs[0])
 new = bpy.data.images.new("painted_face", max(TW, 4096), max(TH, 4096))
 tn = N("ShaderNodeTexImage", image=new); nt.nodes.active = tn
 old = list(me.materials); me.materials.clear(); me.materials.append(mat)
 sc = bpy.context.scene
-sc.render.engine = "CYCLES"; sc.cycles.samples = 8; sc.cycles.device = "CPU"; sc.render.bake.margin = 8
+sc.render.engine = "CYCLES"; sc.cycles.samples = 8; sc.cycles.device = "CPU"; sc.render.bake.margin = 8; sc.render.bake.use_clear = False  # keep the magenta marker in unbaked texels
 bpy.context.view_layer.objects.active = obj; obj.select_set(True)
+new.pixels.foreach_set(np.tile(np.array([1, 0, 1, 1], "f"), new.size[0] * new.size[1]))
 bpy.ops.object.bake(type="EMIT")
+_w, _h = new.size
+_px = np.empty(_w * _h * 4, "f"); new.pixels.foreach_get(_px); _px = _px.reshape(_h, _w, 4)
+_hole = (_px[..., 0] > 0.99) & (_px[..., 1] < 0.01) & (_px[..., 2] > 0.99)
+def push_pull(img, hole):
+    if min(img.shape[:2]) <= 2 or not hole.any():
+        return img
+    w = (~hole).astype("f")
+    h2, w2 = img.shape[0] // 2, img.shape[1] // 2
+    cs = (img[:h2 * 2, :w2 * 2] * w[:h2 * 2, :w2 * 2, None]).reshape(h2, 2, w2, 2, 3).sum((1, 3))
+    ws = w[:h2 * 2, :w2 * 2].reshape(h2, 2, w2, 2).sum((1, 3))
+    small = cs / np.maximum(ws, 1e-6)[..., None]
+    small = push_pull(small, ws < 1e-6)
+    up = np.repeat(np.repeat(small, 2, 0), 2, 1)
+    up = np.pad(up, ((0, img.shape[0] - up.shape[0]), (0, img.shape[1] - up.shape[1]), (0, 0)), mode="edge")
+    out = img.copy(); out[hole] = up[hole]
+    return out
+_px[..., :3] = push_pull(_px[..., :3], _hole)
+new.pixels.foreach_set(_px.ravel())
+print("filled %.1f%% of the texture (gaps between UV islands)" % (100 * _hole.mean()))
 new.pack()
 me.materials.clear()
 for m in old:

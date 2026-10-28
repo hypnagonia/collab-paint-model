@@ -93,13 +93,22 @@ mx = N("ShaderNodeMix", data_type="RGBA"); L(hw.outputs["Color"], mx.inputs["Fac
 L(tt.outputs["Color"], mx.inputs[6]); L(hornc.outputs[2], mx.inputs[7])
 em = N("ShaderNodeEmission"); L(mx.outputs[2], em.inputs[0])
 out = N("ShaderNodeOutputMaterial"); L(em.outputs[0], out.inputs[0])
-new = bpy.data.images.new("painted_horns", TW, TH)
+new = bpy.data.images.new("painted_horns", TW, TH)  # same size as the face-painted texture
 tn = N("ShaderNodeTexImage", image=new); nt.nodes.active = tn
 old = list(me.materials); me.materials.clear(); me.materials.append(mat)
 sc = bpy.context.scene
 sc.render.engine = "CYCLES"; sc.cycles.samples = 2; sc.cycles.device = "CPU"; sc.render.bake.margin = 8
 bpy.context.view_layer.objects.active = obj; obj.select_set(True)
+new.generated_color = (0, 0, 0, 1)
 bpy.ops.object.bake(type="EMIT")
+# keep the gap colours of the source (already filled) instead of black: copy unbaked texels from it
+_w, _h = new.size
+_a = np.empty(_w * _h * 4, "f"); new.pixels.foreach_get(_a)
+_t = np.empty(_w * _h * 4, "f"); tex.pixels.foreach_get(_t)
+_a = _a.reshape(-1, 4); _t = _t.reshape(-1, 4)
+_m = _a[:, :3].sum(1) < 1e-4
+_a[_m] = _t[_m]
+new.pixels.foreach_set(_a.ravel())
 new.pack()
 me.materials.clear()
 for m in old:
