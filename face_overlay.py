@@ -167,7 +167,7 @@ lifted = N("ShaderNodeMix", data_type="RGBA"); L(lift_w, lifted.inputs["Factor"]
 L(mx.outputs[2], lifted.inputs[6]); L(hs.outputs["Color"], lifted.inputs[7])
 import os as _os
 # brightness of the face region relative to the body (measured: lifted face 0.54 vs chest 0.42 value)
-FG = [float(v) for v in _os.environ.get("FACE_GAIN", "0.60,0.53,0.51").split(",")]
+FG = [float(v) for v in _os.environ.get("FACE_GAIN", "1,1,1").split(",")]
 fgain = N("ShaderNodeMix", data_type="RGBA", blend_type="MULTIPLY"); fgain.inputs["Factor"].default_value = 1
 L(lifted.outputs[2], fgain.inputs[6]); fgain.inputs[7].default_value = tuple(FG) + (1,)
 face_reg = m2(m2(wide.outputs["Result"], fac.outputs["Result"], "MULTIPLY"), fsep.outputs[0], "MULTIPLY")
@@ -210,6 +210,50 @@ def push_pull(img, hole):
 _px[..., :3] = push_pull(_px[..., :3], _hole)
 new.pixels.foreach_set(_px.ravel())
 print("filled %.1f%% of the texture (gaps between UV islands)" % (100 * _hole.mean()))
+
+# de-light the face and its surroundings: the photo (and the painter around it) carry their own lighting - cheek
+# and jaw shadows, a lit nose. The large-scale shading is measured on the 3D surface (brightness at each vertex,
+# averaged over its neighbourhood), so UV seams can't show; it is divided out and set to the body's skin level.
+# Small details (eyes, brows, lashes, lips, nostrils) stay; the 3D engine supplies the real light and shadow
+tp2 = _px  # the freshly baked texture
+rgb_v = tp2[np.clip((vuv[:, 1] * _h).astype(int), 0, _h - 1), np.clip((vuv[:, 0] * _w).astype(int), 0, _w - 1), :3].astype(float)
+region = np.clip((1.9 - oval) / 0.6, 0, 1) * (z > nz - 2.6 * eye_mouth) * np.clip((-nr[:, 1] + 0.1) / 0.3, 0, 1)
+region = region * np.where(skin | (mask > 0.3), 1.0, 0.0) * (1 - hairw)
+wv = (region > 0.02).astype(float)
+# per colour channel, so the greenish shadow cast on the cheeks goes too, not just the darkness
+num, den = rgb_v * wv[:, None], wv[:, None].repeat(3, 1)
+cnt = np.zeros(n); np.add.at(cnt, ed[:, 0], 1); np.add.at(cnt, ed[:, 1], 1)
+for _ in range(40):  # wide smoothing over the surface (about 3-4 cm)
+    for arr in (num, den):
+        acc = np.zeros_like(arr); np.add.at(acc, ed[:, 0], arr[ed[:, 1]]); np.add.at(acc, ed[:, 1], arr[ed[:, 0]])
+        arr[:] = 0.5 * arr + 0.5 * acc / np.maximum(cnt, 1)[:, None]
+shade_v = num / np.maximum(den, 1e-4)
+level = np.median(painted[body_skin], 0)
+strength = float(_os.environ.get("FACE_DELIGHT", 0.9))
+gain_v = 1 + strength * region[:, None] * (np.clip(level / np.maximum(shade_v, 1e-3), 0.6, 1.8) - 1)
+sl = shade_v[region > 0.5] @ np.array([0.299, 0.587, 0.114])
+print("de-lit the face: shading %.2f..%.2f brought to %s on %d vertices" % (
+    np.percentile(sl, 5), np.percentile(sl, 95), np.round(level * 255).astype(int), (region > 0.5).sum()))
+ga = me.color_attributes.new("delight", "FLOAT_COLOR", "POINT")
+c4 = np.ones((n, 4), "f"); c4[:, :3] = gain_v ** 2.2  # stored values are display-encoded; the shader works linear
+ga.data.foreach_set("color", c4.ravel())
+# second bake: the baked texture times the per-vertex gain
+nt2 = mat.node_tree
+for nd_ in list(nt2.nodes):
+    nt2.nodes.remove(nd_)
+t2 = nt2.nodes.new("ShaderNodeTexImage"); t2.image = new
+uv2 = nt2.nodes.new("ShaderNodeUVMap"); uv2.uv_map = me.uv_layers.active.name; nt2.links.new(uv2.outputs["UV"], t2.inputs["Vector"])
+gv = nt2.nodes.new("ShaderNodeVertexColor"); gv.layer_name = "delight"
+mul = nt2.nodes.new("ShaderNodeMix"); mul.data_type = "RGBA"; mul.blend_type = "MULTIPLY"; mul.inputs["Factor"].default_value = 1
+nt2.links.new(t2.outputs["Color"], mul.inputs[6]); nt2.links.new(gv.outputs["Color"], mul.inputs[7])
+em2 = nt2.nodes.new("ShaderNodeEmission"); nt2.links.new(mul.outputs[2], em2.inputs[0])
+o2 = nt2.nodes.new("ShaderNodeOutputMaterial"); nt2.links.new(em2.outputs[0], o2.inputs[0])
+final = bpy.data.images.new("painted_face_final", _w, _h)
+final.pixels.foreach_set(_px.ravel())  # start from the filled texture so the gaps stay filled
+tf = nt2.nodes.new("ShaderNodeTexImage"); tf.image = final; nt2.nodes.active = tf
+bpy.ops.object.bake(type="EMIT")
+new.pixels.foreach_set(np.array(final.pixels[:], "f"))
+me.color_attributes.remove(me.color_attributes["delight"])
 new.pack()
 me.materials.clear()
 for m in old:
