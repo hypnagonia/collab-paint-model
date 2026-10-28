@@ -1,0 +1,17 @@
+# third-party clone, environments, weights
+repo/
+.venv/
+__pycache__/
+*.pyc
+# generated models, renders and the source photos
+out*/
+in*/
+*.log
+*.blend
+*.blend1
+*.glb
+*.png
+*.jpg
+*.jpeg
+*.zip
+out_log.txt
