@@ -85,6 +85,53 @@ for _ in range(3):
     np.add.at(cnt, ed[:, 0], 1); np.add.at(cnt, ed[:, 1], 1)
     hairw = np.maximum(hairw, 0.5 * hairw + 0.5 * acc / np.maximum(cnt, 1))
 hairw *= upper_front
+
+# hair painted as skin elsewhere on the head (beside the face, behind the ears, over the temples): the reference
+# photos are segmented (hair / skin / clothing); each photo is laid onto the mesh by its silhouette and votes per
+# vertex where that vertex faces its camera. Where the photos say hair and the paint is skin-coloured -> hair
+import os as _os2
+ref_dir = _os2.path.dirname(FRONT)
+votes = np.zeros((n, 5))
+for view in ("front", "back", "left", "right"):
+    seg_p = _os2.path.join(ref_dir, "ref_%s_seg.npy" % view)
+    crop_p = _os2.path.join(ref_dir, "ref_%s_crop.png" % view)
+    if not (_os2.path.isfile(seg_p) and _os2.path.isfile(crop_p)):
+        continue
+    seg = np.load(seg_p)  # row 0 = top
+    im_ = bpy.data.images.load(crop_p, check_existing=True)
+    cw_, ch_ = im_.size
+    al = np.empty(cw_ * ch_ * 4, "f"); im_.pixels.foreach_get(al); al = al.reshape(ch_, cw_, 4)[::-1, :, 3] > 0.5  # row 0 = top
+    if view == "front":
+        cands = [(x, -nr[:, 1])]
+    elif view == "back":
+        cands = [(-x, nr[:, 1])]
+    else:  # which side the profile was taken from: try both, keep the better silhouette overlap
+        cands = [(y, nr[:, 0]), (-y, -nr[:, 0])]
+    best = None
+    for a_, face_ in cands:
+        u_ = ((a_ - a_.min()) / (a_.max() - a_.min()) * (cw_ - 1)).astype(int)
+        v_ = ((zmax - z) / (zmax - zmin) * (ch_ - 1)).astype(int)
+        occ = np.zeros((ch_, cw_), bool); occ[v_, u_] = True
+        iou = (occ & al).sum() / max((occ | al).sum(), 1)
+        sil = (al[v_, u_].mean())
+        if best is None or sil > best[0]:
+            best = (sil, u_, v_, face_)
+    sil, u_, v_, face_ = best
+    lab_ = seg[np.clip(v_, 0, seg.shape[0] - 1), np.clip(u_, 0, seg.shape[1] - 1)].astype(int)
+    w_ = np.clip((face_ - 0.25) / 0.4, 0, 1)
+    np.add.at(votes, (np.arange(n), np.clip(lab_, 0, 4)), w_)
+    print("seg vote %-5s: %.0f%% of vertices land inside the photo's figure" % (view, 100 * sil))
+head_zone = z > nz - 3.5 * eye_mouth
+seg_hair = head_zone & (votes[:, 1] > 0.6 * votes[:, 2] + 0.15) & (votes[:, 1] > 0.3) & skin & (mask < 0.5)
+hw2 = seg_hair.astype(float)
+for _ in range(2):
+    acc = np.zeros(n); cnt = np.zeros(n)
+    np.add.at(acc, ed[:, 0], hw2[ed[:, 1]]); np.add.at(acc, ed[:, 1], hw2[ed[:, 0]])
+    np.add.at(cnt, ed[:, 0], 1); np.add.at(cnt, ed[:, 1], 1)
+    hw2 = np.maximum(hw2, 0.5 * hw2 + 0.5 * acc / np.maximum(cnt, 1)) * head_zone
+hairw = np.maximum(hairw, hw2 * (1 - np.clip(mask * 2, 0, 1)))
+print("photos say hair, paint says skin: %d head vertices repainted as hair" % seg_hair.sum())
+upper_front = upper_front | (hairw > 0)
 mask = mask * (1 - hairw)
 print("forehead skin -> hair: %d vertices, hair colour %s" % ((hairw > 0.5).sum(), np.round(hair_col * 255).astype(int)))
 print("forehead: photo kept on %d of %d vertices" % (((keep > 0.5) & forehead & (mask > 0)).sum(), (forehead & (mask > 0)).sum()))
