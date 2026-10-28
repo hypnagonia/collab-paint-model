@@ -154,6 +154,13 @@ W[np.ix_(co[:, 2] > 0.92, leg_k)] = 0
 W[W.sum(1) < 1e-6] = W_dist[W.sum(1) < 1e-6] + 1e-9
 W /= W.sum(1, keepdims=True)
 W = smooth(body, W, 10)  # wide blends at the joints: soft, round bends
+# the smoothing leaks arm weight into the waist beside the fists; raised arms then pull thin spikes out of the body.
+# Body surface farther than an arm's radius from every arm bone keeps no arm weight
+arm_bones = [k for k, n in enumerate(names) if n.split(".")[0] in ("upper_arm", "forearm", "hand")]
+arm_dist = np.minimum.reduce([seg_dist(co, np.array(J[n][0]), np.array(J[n][1])) for n in names if n.split(".")[0] in ("upper_arm", "forearm", "hand")])
+far = np.clip((arm_dist - 0.075) / 0.03, 0, 1)
+W[:, arm_bones] *= (1 - far)[:, None]
+W /= W.sum(1, keepdims=True) + 1e-12
 # the free skirt sheet hangs away from both legs: it moves with the hips only (leg weight shears it)
 leg_d = np.minimum.reduce([seg_dist(co, np.array(J[f"{b}.{s}"][0]), np.array(J[f"{b}.{s}"][1]))
                            for b in ("thigh", "shin") for s in "LR"])
@@ -192,6 +199,7 @@ for side, sgn in (("L", 1), ("R", -1)):
         for i in np.nonzero(shell)[0]:
             W[i] = W[kd.find(co[i])[1]]
 print("skirt sheet vertices", sheet.sum())
+
 write_groups(body, W)
 
 for b in rig.pose.bones:
