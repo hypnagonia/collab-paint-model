@@ -72,6 +72,20 @@ for _ in range(3):  # soften the cut
     np.add.at(cnt, ed[:, 0], 1); np.add.at(cnt, ed[:, 1], 1)
     keep = 0.5 * keep + 0.5 * acc / np.maximum(cnt, 1)
 mask = mask * keep
+# the painter also put skin on the hair above the forehead (up to the horn roots). Wherever the photo shows hair
+# above the brows on the front of the head, paint it the hair colour
+hair_col = np.median(painted[(painted.max(1) < 0.3) & (painted[:, 2] >= painted[:, 0] - 0.02) & (z > nz)], 0)
+upper_front = (z > nz + 0.9 * eye_mouth) & (z < zmax - 0.02) & (np.abs(x - nx) < 0.13) & (nr[:, 1] < 0.1)
+in_photo = (U > 0) & (U < W - 1) & (V > 0) & (V < H - 1) & (pp[V, U, 3] > 0.5)
+hairw = (upper_front & in_photo & ~ph_skin & skin).astype(float)  # painted as skin, photo says hair
+for _ in range(3):
+    acc = np.zeros(n); cnt = np.zeros(n)
+    np.add.at(acc, ed[:, 0], hairw[ed[:, 1]]); np.add.at(acc, ed[:, 1], hairw[ed[:, 0]])
+    np.add.at(cnt, ed[:, 0], 1); np.add.at(cnt, ed[:, 1], 1)
+    hairw = np.maximum(hairw, 0.5 * hairw + 0.5 * acc / np.maximum(cnt, 1))
+hairw *= upper_front
+mask = mask * (1 - hairw)
+print("forehead skin -> hair: %d vertices, hair colour %s" % ((hairw > 0.5).sum(), np.round(hair_col * 255).astype(int)))
 print("forehead: photo kept on %d of %d vertices" % (((keep > 0.5) & forehead & (mask > 0)).sum(), (forehead & (mask > 0)).sum()))
 sel = (mask > 0.5) & skin
 body_skin = skin & (z < nz - 0.06) & (z > nz - 0.32) & (np.abs(x - nx) < 0.12) & (nr[:, 1] < -0.2)
@@ -83,6 +97,8 @@ print("skin match: %d face / %d body vertices, scale %s offset %s" % (sel.sum(),
 
 a_ = me.color_attributes.new("face_w", "FLOAT_COLOR", "POINT")
 c4 = np.ones((n, 4), "f"); c4[:, :3] = mask[:, None]; a_.data.foreach_set("color", c4.ravel())
+b_ = me.color_attributes.new("hair_w", "FLOAT_COLOR", "POINT")
+c4 = np.ones((n, 4), "f"); c4[:, :3] = hairw[:, None]; b_.data.foreach_set("color", c4.ravel())
 
 # shader: per-pixel front projection of the photo (no vertex-colour blur), mixed over the painted texture
 mat = bpy.data.materials.new("face_bake"); nt = mat.node_tree; nt.nodes.clear()
@@ -108,7 +124,15 @@ tt = N("ShaderNodeTexImage", image=tex); L(uvn.outputs["UV"], tt.inputs["Vector"
 fw = N("ShaderNodeVertexColor", layer_name="face_w")
 mx = N("ShaderNodeMix", data_type="RGBA"); L(fw.outputs["Color"], mx.inputs["Factor"])
 L(tt.outputs["Color"], mx.inputs[6]); L(gn.outputs[0], mx.inputs[7])
-em = N("ShaderNodeEmission"); L(mx.outputs[2], em.inputs[0])
+hw_ = N("ShaderNodeVertexColor", layer_name="hair_w")
+# painted texture darkened to the hair colour (keeps its shading and strands)
+tint = N("ShaderNodeMix", data_type="RGBA", blend_type="MULTIPLY"); tint.inputs["Factor"].default_value = 1
+L(tt.outputs["Color"], tint.inputs[6])
+ratio = np.clip(np.power(hair_col, 2.2) / (np.power(np.median(painted[skin & upper_front], 0), 2.2) + 1e-4), 0, 1) if (skin & upper_front).any() else np.ones(3)
+tint.inputs[7].default_value = tuple(float(v) for v in ratio) + (1,)
+mx2 = N("ShaderNodeMix", data_type="RGBA"); L(hw_.outputs["Color"], mx2.inputs["Factor"])
+L(mx.outputs[2], mx2.inputs[6]); L(tint.outputs[2], mx2.inputs[7])
+em = N("ShaderNodeEmission"); L(mx2.outputs[2], em.inputs[0])
 out = N("ShaderNodeOutputMaterial"); L(em.outputs[0], out.inputs[0])
 new = bpy.data.images.new("painted_face", TW, TH)
 tn = N("ShaderNodeTexImage", image=new); nt.nodes.active = tn
@@ -124,7 +148,8 @@ for m in old:
     for nd in m.node_tree.nodes:
         if nd.type == "TEX_IMAGE" and nd.image is tex:
             nd.image = new
-me.color_attributes.remove(me.color_attributes["face_w"])
+for nm_ in ("face_w", "hair_w"):
+    me.color_attributes.remove(me.color_attributes[nm_])
 bpy.ops.wm.save_as_mainfile(filepath=OUT.replace(".glb", ".blend"))
 bpy.ops.export_scene.gltf(filepath=OUT, export_format="GLB", export_image_format="JPEG", export_vertex_color="NONE")
 print("DONE")
