@@ -21,6 +21,7 @@ co = np.empty(n * 3, "f"); me.vertices.foreach_get("co", co); co = co.reshape(-1
 nr = np.empty(n * 3, "f"); me.vertices.foreach_get("normal", nr); nr = nr.reshape(-1, 3) @ M[:3, :3].T
 nr /= np.linalg.norm(nr, axis=1, keepdims=True) + 1e-9
 x, y, z = co.T
+ed = np.empty(len(me.edges) * 2, np.int64); me.edges.foreach_get("vertices", ed); ed = ed.reshape(-1, 2)
 zmin, zmax = z.min(), z.max()
 
 ph = bpy.data.images.load(FRONT)
@@ -60,6 +61,18 @@ V = np.clip(((H - pny) + (z - nz) * k).astype(int), 0, H - 1)
 photo = pp[V, U, :3]
 # colour transfer: the photo face takes the painted body's skin statistics (mean and spread per channel), measured
 # on the neck and upper chest, so face and body read as one skin. Done in linear values, like the shader.
+# above the brows the photo shows her hair falling over the forehead: keep the photo only where it is skin there,
+# so those locks stay painted hair instead of a brightened photo of hair
+ph_skin = (photo[:, 0] > photo[:, 2] + 0.04) & (photo.mean(1) > 0.16)
+forehead = z > nz + 1.0 * eye_mouth
+keep = np.where(forehead, ph_skin, True).astype(float)
+for _ in range(3):  # soften the cut
+    acc = np.zeros(n); cnt = np.zeros(n)
+    np.add.at(acc, ed[:, 0], keep[ed[:, 1]]); np.add.at(acc, ed[:, 1], keep[ed[:, 0]])
+    np.add.at(cnt, ed[:, 0], 1); np.add.at(cnt, ed[:, 1], 1)
+    keep = 0.5 * keep + 0.5 * acc / np.maximum(cnt, 1)
+mask = mask * keep
+print("forehead: photo kept on %d of %d vertices" % (((keep > 0.5) & forehead & (mask > 0)).sum(), (forehead & (mask > 0)).sum()))
 sel = (mask > 0.5) & skin
 body_skin = skin & (z < nz - 0.06) & (z > nz - 0.32) & (np.abs(x - nx) < 0.12) & (nr[:, 1] < -0.2)
 lin = lambda c: np.power(np.clip(c, 0, 1), 2.2)
