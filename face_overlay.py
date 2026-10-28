@@ -91,7 +91,7 @@ hairw *= upper_front
 # vertex where that vertex faces its camera. Where the photos say hair and the paint is skin-coloured -> hair
 import os as _os2
 ref_dir = _os2.path.dirname(FRONT)
-votes = np.zeros((n, 5))
+votes = np.zeros((n, 5)); votes_front = np.zeros((n, 5))
 for view in ("front", "back", "left", "right"):
     seg_p = _os2.path.join(ref_dir, "ref_%s_seg.npy" % view)
     crop_p = _os2.path.join(ref_dir, "ref_%s_crop.png" % view)
@@ -120,16 +120,38 @@ for view in ("front", "back", "left", "right"):
     lab_ = seg[np.clip(v_, 0, seg.shape[0] - 1), np.clip(u_, 0, seg.shape[1] - 1)].astype(int)
     w_ = np.clip((face_ - 0.25) / 0.4, 0, 1)
     np.add.at(votes, (np.arange(n), np.clip(lab_, 0, 4)), w_)
+    if view == "front":
+        np.add.at(votes_front, (np.arange(n), np.clip(lab_, 0, 4)), w_)
     print("seg vote %-5s: %.0f%% of vertices land inside the photo's figure" % (view, 100 * sil))
 head_zone = z > nz - 3.5 * eye_mouth
-seg_hair = head_zone & (votes[:, 1] > 0.6 * votes[:, 2] + 0.15) & (votes[:, 1] > 0.3) & skin & (mask < 0.5)
+# near the face only the front photo decides (in the profiles the locks fall over the cheek and would take it)
+near_face = oval < 2.6
+v_use = np.where(near_face[:, None], votes_front, votes)
+seg_hair = head_zone & (v_use[:, 1] > 0.6 * v_use[:, 2] + 0.15) & (v_use[:, 1] > 0.3) & skin & (mask < 0.5)
+# where the front photo itself shows hair beside the face, the feathered edge of the face blend lets the painter's
+# skin show through on the hair: those vertices are hair whatever the face mask says
+front_hair = head_zone & (votes_front[:, 1] > 0.2) & (votes_front[:, 1] >= votes_front[:, 2]) & skin & ~ph_skin
+seg_hair |= front_hair
+print("front photo says hair on %d skin-painted vertices at the face edge" % front_hair.sum())
 hw2 = seg_hair.astype(float)
 for _ in range(2):
     acc = np.zeros(n); cnt = np.zeros(n)
     np.add.at(acc, ed[:, 0], hw2[ed[:, 1]]); np.add.at(acc, ed[:, 1], hw2[ed[:, 0]])
     np.add.at(cnt, ed[:, 0], 1); np.add.at(cnt, ed[:, 1], 1)
     hw2 = np.maximum(hw2, 0.5 * hw2 + 0.5 * acc / np.maximum(cnt, 1)) * head_zone
-hairw = np.maximum(hairw, hw2 * (1 - np.clip(mask * 2, 0, 1)))
+hairw = np.maximum(hairw, hw2 * np.where(front_hair, 1.0, 1 - np.clip(mask * 2, 0, 1)))
+# skin colour around the face that is not the face itself, not an ear and not the neck is hair the painter missed
+dxn = x - nx
+ear = (np.abs(dxn) > 0.075) & (z > nz - 0.4 * eye_mouth) & (z < nz + 1.4 * eye_mouth) & (np.sign(nr[:, 0]) == np.sign(dxn)) & (np.abs(nr[:, 0]) > 0.5)
+around = skin & (mask < 0.25) & (z > nz - 1.3 * eye_mouth) & (z < zmax - 0.02) & ~ear & (oval < 4.0)
+aw2 = around.astype(float)
+for _ in range(2):
+    acc = np.zeros(n); cnt = np.zeros(n)
+    np.add.at(acc, ed[:, 0], aw2[ed[:, 1]]); np.add.at(acc, ed[:, 1], aw2[ed[:, 0]])
+    np.add.at(cnt, ed[:, 0], 1); np.add.at(cnt, ed[:, 1], 1)
+    aw2 = np.maximum(aw2, 0.5 * aw2 + 0.5 * acc / np.maximum(cnt, 1))
+hairw = np.maximum(hairw, aw2 * (1 - np.clip(mask * 3, 0, 1)))
+print("skin around the face (not face, ear or neck) -> hair: %d vertices" % around.sum())
 print("photos say hair, paint says skin: %d head vertices repainted as hair" % seg_hair.sum())
 upper_front = upper_front | (hairw > 0)
 mask = mask * (1 - hairw)
@@ -301,6 +323,34 @@ tf = nt2.nodes.new("ShaderNodeTexImage"); tf.image = final; nt2.nodes.active = t
 bpy.ops.object.bake(type="EMIT")
 new.pixels.foreach_set(np.array(final.pixels[:], "f"))
 me.color_attributes.remove(me.color_attributes["delight"])
+
+# ink: darken the fine dark lines of the face (lash lines, brows, lip line, nostrils) a little, like an inked
+# drawing. Small details darker than their surroundings are found per pixel inside the face region
+ia = me.color_attributes.new("inkmask", "FLOAT_COLOR", "POINT")
+c4 = np.ones((n, 4), "f"); c4[:, :3] = np.clip(mask * 1.5, 0, 1)[:, None]; ia.data.foreach_set("color", c4.ravel())
+for nd_ in list(nt2.nodes):
+    nt2.nodes.remove(nd_)
+iv = nt2.nodes.new("ShaderNodeVertexColor"); iv.layer_name = "inkmask"
+em3 = nt2.nodes.new("ShaderNodeEmission"); nt2.links.new(iv.outputs["Color"], em3.inputs[0])
+o3 = nt2.nodes.new("ShaderNodeOutputMaterial"); nt2.links.new(em3.outputs[0], o3.inputs[0])
+inkimg = bpy.data.images.new("ink_mask", _w, _h)
+ti = nt2.nodes.new("ShaderNodeTexImage"); ti.image = inkimg; nt2.nodes.active = ti
+bpy.ops.object.bake(type="EMIT")
+_im = np.empty(_w * _h * 4, "f"); inkimg.pixels.foreach_get(_im); _im = _im.reshape(_h, _w, 4)[..., 0]
+_pf = np.array(new.pixels[:], "f").reshape(_h, _w, 4)
+lum2 = _pf[..., :3] @ np.array([0.299, 0.587, 0.114], "f")
+def box(a, r):
+    for ax in (0, 1):
+        c = np.cumsum(np.pad(a, [(r + 1, r) if i == ax else (0, 0) for i in range(2)], mode="edge"), axis=ax)
+        a = (np.take(c, range(2 * r + 1, c.shape[ax]), axis=ax) - np.take(c, range(0, c.shape[ax] - 2 * r - 1), axis=ax)) / (2 * r + 1)
+    return a
+detail = box(lum2, 4) - lum2
+ink = np.clip((detail - 0.015) / 0.05, 0, 1) * np.clip(_im, 0, 1)
+INK = float(_os.environ.get("FACE_INK", 0.55))
+_pf[..., :3] *= (1 - INK * ink)[..., None]
+new.pixels.foreach_set(_pf.ravel())
+me.color_attributes.remove(me.color_attributes["inkmask"])
+print("inked %.0f face pixels" % (ink > 0.5).sum())
 new.pack()
 me.materials.clear()
 for m in old:

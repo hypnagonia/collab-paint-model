@@ -68,14 +68,14 @@ def N(t, **kw):
 lin = lambda c: tuple((v / 255) ** 2.2 for v in c) + (1,)
 tc = N("ShaderNodeTexCoord")
 wv = N("ShaderNodeTexWave", wave_type="RINGS", rings_direction="Z", wave_profile="SAW")
-wv.inputs["Scale"].default_value = 90; wv.inputs["Distortion"].default_value = 0.8; wv.inputs["Detail"].default_value = 3
+wv.inputs["Scale"].default_value = 32  # coarse rings: fine ones shimmer at a distance; wv.inputs["Distortion"].default_value = 0.8; wv.inputs["Detail"].default_value = 3
 L(tc.outputs["Object"], wv.inputs["Vector"])
 nz = N("ShaderNodeTexNoise"); nz.inputs["Scale"].default_value = 60; nz.inputs["Detail"].default_value = 6
 L(tc.outputs["Object"], nz.inputs["Vector"])
 mf = N("ShaderNodeMix", data_type="FLOAT"); mf.inputs["Factor"].default_value = 0.25
 L(wv.outputs["Fac"], mf.inputs[2]); L(nz.outputs["Fac"], mf.inputs[3])
 rp = N("ShaderNodeValToRGB"); cr = rp.color_ramp
-for i, (pos, c) in enumerate([(0.2, (16, 17, 26)), (0.55, (34, 37, 54)), (0.9, (64, 70, 94))]):
+for i, (pos, c) in enumerate([(0.25, (20, 21, 32)), (0.6, (34, 37, 54)), (0.95, (52, 57, 78))]):
     e = cr.elements[i] if i < 2 else cr.elements.new(pos)
     e.position, e.color = pos, lin(c)
 L(mf.outputs[0], rp.inputs["Fac"])
