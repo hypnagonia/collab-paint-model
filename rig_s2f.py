@@ -178,9 +178,16 @@ hips_k = names.index("hips")
 dL = seg_dist(co, np.array(J["thigh.L"][0]), np.array(J["thigh.L"][1]))
 dR = seg_dist(co, np.array(J["thigh.R"][0]), np.array(J["thigh.R"][1]))
 near_thigh = np.where(dL < dR, names.index("thigh.L"), names.index("thigh.R"))
-follow = 0.5
+# behind the legs the stepping-back leg (and its boot, with the knee bent) pushes into the cloth: there it follows
+# the thigh closely and, down at the hem, partly the shin too
+behind = np.clip((co[:, 1] - 0.0) / 0.06, 0, 1)
+follow = 0.5 + 0.35 * behind
+near_shin = np.where(dL < dR, names.index("shin.L"), names.index("shin.R"))
+low = np.clip((0.6 - co[:, 2]) / 0.25, 0, 1) * behind
+shin_part = 0.35 * low
 W = W * (1 - f[:, None]); W[:, hips_k] += f * (1 - follow)
-np.add.at(W, (np.arange(len(co)), near_thigh), f * follow)
+np.add.at(W, (np.arange(len(co)), near_thigh), f * (follow - shin_part))
+np.add.at(W, (np.arange(len(co)), near_shin), f * shin_part)
 W = smooth(body, W, 8)
 sheet = f > 0.5
 # bracers: dark shells around the forearms take the weights of the arm surface under them

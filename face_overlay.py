@@ -262,7 +262,9 @@ new.pixels.foreach_set(np.tile(np.array([1, 0, 1, 1], "f"), new.size[0] * new.si
 bpy.ops.object.bake(type="EMIT")
 _w, _h = new.size
 _px = np.empty(_w * _h * 4, "f"); new.pixels.foreach_get(_px); _px = _px.reshape(_h, _w, 4)
-_hole = (_px[..., 0] > 0.99) & (_px[..., 1] < 0.01) & (_px[..., 2] > 0.99)
+# the marker plus the half-marker fringe the bake's edge filtering leaves around islands (nothing on her is magenta)
+_hole = (_px[..., 0] - _px[..., 1] > 0.35) & (_px[..., 2] - _px[..., 1] > 0.35) & (_px[..., 0] > 0.45) & (_px[..., 2] > 0.45)
+_hole = _hole | np.roll(_hole, 1, 0) | np.roll(_hole, -1, 0) | np.roll(_hole, 1, 1) | np.roll(_hole, -1, 1)
 def push_pull(img, hole):
     if min(img.shape[:2]) <= 2 or not hole.any():
         return img
