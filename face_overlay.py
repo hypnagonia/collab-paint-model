@@ -28,7 +28,7 @@ ph = bpy.data.images.load(FRONT)
 W, H = ph.size
 k = H / (zmax - zmin)                       # photo pixels per metre: the crop spans the whole figure
 # the painted texture at every vertex (to tell skin from hair)
-tex = next(im for im in bpy.data.images if im is not ph and im.size[0] >= 512)
+tex = next(nd.image for m in me.materials for nd in m.node_tree.nodes if nd.type == "TEX_IMAGE" and nd.image)
 TW, TH = tex.size
 tp = np.empty(TW * TH * 4, "f"); tex.pixels.foreach_get(tp); tp = tp.reshape(TH, TW, 4)
 uv = np.empty(len(me.loops) * 2, "f"); me.uv_layers.active.data.foreach_get("uv", uv); uv = uv.reshape(-1, 2)

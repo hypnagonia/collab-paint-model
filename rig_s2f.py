@@ -132,7 +132,7 @@ W[miss] = W_dist[miss]
 # the long hair hangs down the back beside the arms: it follows only the upper body
 upper = [names.index(n) for n in ("chest", "neck", "head", "spine")]
 # painted colour per vertex
-_img = next(i for i in bpy.data.images if i.size[0] >= 512)
+_img = next(nd.image for m in body.data.materials for nd in m.node_tree.nodes if nd.type == "TEX_IMAGE" and nd.image)
 _TW, _TH = _img.size
 _tp = np.empty(_TW * _TH * 4, "f"); _img.pixels.foreach_get(_tp); _tp = _tp.reshape(_TH, _TW, 4)
 _uv = np.empty(len(body.data.loops) * 2, "f"); body.data.uv_layers.active.data.foreach_get("uv", _uv); _uv = _uv.reshape(-1, 2)
@@ -166,7 +166,14 @@ arm_d = np.minimum.reduce([seg_dist(co, np.array(J[f"{b}.{s}"][0]), np.array(J[f
 f = np.clip((leg_d - 0.08) / 0.12, 0, 1) ** 1.5 * ((co[:, 2] < 0.95) & (co[:, 2] > 0.15) & ~skin_col)
 f *= np.clip((arm_d - 0.07) / 0.04, 0, 1)
 hips_k = names.index("hips")
-W = W * (1 - f[:, None]); W[:, hips_k] += f
+# the sheet hangs in front of and beside the thighs: if it stayed on the hips alone the stepping leg would come out
+# through it. It follows the nearer thigh about halfway (not the shin, so the hem doesn't kick up)
+dL = seg_dist(co, np.array(J["thigh.L"][0]), np.array(J["thigh.L"][1]))
+dR = seg_dist(co, np.array(J["thigh.R"][0]), np.array(J["thigh.R"][1]))
+near_thigh = np.where(dL < dR, names.index("thigh.L"), names.index("thigh.R"))
+follow = 0.5
+W = W * (1 - f[:, None]); W[:, hips_k] += f * (1 - follow)
+np.add.at(W, (np.arange(len(co)), near_thigh), f * follow)
 W = smooth(body, W, 8)
 sheet = f > 0.5
 # bracers: dark shells around the forearms take the weights of the arm surface under them
