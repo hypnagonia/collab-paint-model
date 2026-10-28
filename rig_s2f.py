@@ -160,7 +160,11 @@ leg_d = np.minimum.reduce([seg_dist(co, np.array(J[f"{b}.{s}"][0]), np.array(J[f
 # soft: fully on the hips far from the legs, blending into the leg weights near them (a hard edge tore the
 # sheet away from the thigh it is fused to); bare skin is leg, never sheet
 skin_col = (col[:, 0] > col[:, 2] + 0.08) & (col[:, 0] > 0.25)
+# the dark gloved hands hang beside the hips too: anything near a forearm/hand bone is arm, never sheet
+arm_d = np.minimum.reduce([seg_dist(co, np.array(J[f"{b}.{s}"][0]), np.array(J[f"{b}.{s}"][1]))
+                           for b in ("forearm", "hand") for s in "LR"])
 f = np.clip((leg_d - 0.08) / 0.12, 0, 1) ** 1.5 * ((co[:, 2] < 0.95) & (co[:, 2] > 0.15) & ~skin_col)
+f *= np.clip((arm_d - 0.07) / 0.04, 0, 1)
 hips_k = names.index("hips")
 W = W * (1 - f[:, None]); W[:, hips_k] += f
 W = smooth(body, W, 8)

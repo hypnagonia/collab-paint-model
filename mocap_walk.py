@@ -236,6 +236,21 @@ for i in range(CYCLE + 1):
         delta = seg_mean[name].rotation_difference(Vector(seg_dir[name][k]))
         delta = Quaternion().slerp(delta, DAMP.get(name.split(".")[0], 1.0))
         aim(name, delta @ rest_dir)
+    # feet: the actor's toe pitch on a different foot shape lifts the toes off the floor during stance and flips
+    # them far up at heel strike. Keep the sole flat while the ankle is near the floor, let the toes rise at most
+    # 15 deg above flat in the air, and never point them further down than the actor's toe-off
+    for side in "LR":
+        fb = pb[f"foot.{side}"]
+        rd = rest[f"foot.{side}"].col[1].xyz.normalized()
+        rest_pitch = math.atan2(-rd.z, rd.xy.length)
+        d = (fb.matrix.col[1].xyz).normalized()
+        pitch = math.atan2(-d.z, d.xy.length)
+        lift = ((rig.matrix_world @ fb.head).z - rest[f"foot.{side}"].translation.z) / 0.06  # 0 on the floor, 1 high
+        lift = min(max(lift, 0.0), 1.0)
+        want = max(pitch, rest_pitch - math.radians(15))
+        want = rest_pitch + (want - rest_pitch) * lift
+        horiz = d.xy.normalized() if d.xy.length > 1e-4 else rd.xy.normalized()
+        aim(f"foot.{side}", Vector((horiz.x * math.cos(want), horiz.y * math.cos(want), -math.sin(want))))
     # plant: lowest point of either boot on the ground
     plant.append(-lowest_foot())
     hip.matrix = Matrix.Translation((0, 0, plant[-1])) @ hip.matrix
